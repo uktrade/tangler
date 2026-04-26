@@ -8,9 +8,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "faker>=36.1.1",
-    "pandas>=2.3.3",
     "polars>=1.32.3",
-    "pyarrow>=17.0.0",
     "pydantic>=2.9.2",
 ]
 

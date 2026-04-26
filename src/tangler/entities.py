@@ -12,9 +12,7 @@ from random import getrandbits
 from types import NotImplementedType
 from typing import Any, Generic, Self, TypeVar
 
-import pandas as pd
 import polars as pl
-import pyarrow as pa
 from faker import Faker
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -300,12 +298,13 @@ class SourceKeyMixin:
                 raise ValueError(f"SourceConfig not found: {source_name}")
 
             # Get rows for this entity in this source
-            df = source.data.to_pandas()
-            entity_rows = df[df["key"].isin(keys)]
+            entity_rows = source.data.filter(pl.col("key").is_in(list(keys)))
 
             # Get unique values for each feature in this source
             values[source_name] = {
-                feature.name: sorted(entity_rows[feature.name].unique())
+                feature.name: sorted(
+                    entity_rows.get_column(feature.name).unique().drop_nulls().to_list()
+                )
                 for feature in source.features
             }
 
@@ -468,25 +467,21 @@ class SourceEntity(BaseModel, EntityIDMixin, SourceKeyMixin):
 
 
 def query_to_cluster_entities(
-    data: pa.Table | pd.DataFrame | pl.DataFrame,
+    data: pl.DataFrame,
     keys: dict[SourceStepName, str],
 ) -> set[ClusterEntity]:
     """Convert a query result to a set of ClusterEntities.
 
-    Useful for turning a real query from a real model step in Matchbox into
-    a set of ClusterEntities that can be used in `LinkedSourcesTestkit.diff_entities()`.
+    Useful for turning query results into a set of ClusterEntities that can be used
+    in `diff_entities()`.
 
     Args:
-        data: A PyArrow table or DataFrame representing a query result
+        data: A Polars DataFrame representing a query result
         keys: Mapping of source step names to key field names
 
     Returns:
         A set of ClusterEntity objects
     """
-    # Convert polars to pandas for compatibility with existing logic
-    if isinstance(data, pl.DataFrame | pa.Table):
-        data = data.to_pandas()
-
     must_have_fields = set(["id"] + list(keys.values()))
     if not must_have_fields.issubset(data.columns):
         raise ValueError(
@@ -494,20 +489,27 @@ def query_to_cluster_entities(
             "in the data and are missing."
         )
 
-    def _create_cluster_entity(group: pd.DataFrame) -> ClusterEntity:
-        entity_refs = {
-            source: frozenset(group[key_field].dropna().values)
-            for source, key_field in keys.items()
-            if not group[key_field].dropna().empty
-        }
+    grouped = data.group_by("id").agg(
+        pl.col(key_field).drop_nulls().unique().alias(source)
+        for source, key_field in keys.items()
+    )
 
-        return ClusterEntity(
-            id=group.name,
-            keys=EntityReference(entity_refs),
+    entities: set[ClusterEntity] = set()
+    for row in grouped.iter_rows(named=True):
+        entity_refs: dict[SourceStepName, frozenset[str]] = {}
+        for source in keys:
+            source_keys = row[source]
+            if source_keys:
+                entity_refs[source] = frozenset(source_keys)
+
+        entities.add(
+            ClusterEntity(
+                id=row["id"],
+                keys=EntityReference(entity_refs),
+            )
         )
 
-    result = data.groupby("id").apply(_create_cluster_entity, include_groups=False)
-    return set(result.tolist())
+    return entities
 
 
 def _merge_cluster_entities(

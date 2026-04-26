@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any
 
 import polars as pl
@@ -12,6 +13,7 @@ from tangler import (
     SourceStepName,
     diff_entities,
     generate_entities,
+    query_to_cluster_entities,
     scores_to_results_entities,
 )
 
@@ -429,6 +431,69 @@ def test_source_to_results_conversion() -> None:
 
     # Test missing source returns None
     assert source.to_cluster_entity("nonexistent") is None
+
+
+def test_get_values_uses_polars_data() -> None:
+    """Test extracting entity values from Polars source data."""
+    entity = SourceEntity(
+        base_values={"name": "Test"},
+        keys=EntityReference({"source1": frozenset({"1", "2"})}),
+    )
+    source = SimpleNamespace(
+        data=pl.DataFrame(
+            {
+                "key": ["1", "2", "3"],
+                "name": ["Beta", "Alpha", "Gamma"],
+            }
+        ),
+        features=(FeatureConfig(name="name", base_generator="name"),),
+    )
+
+    assert entity.get_values({"source1": source}) == {
+        "source1": {"name": ["Alpha", "Beta"]}
+    }
+
+
+def test_query_to_cluster_entities_from_polars() -> None:
+    """Test converting Polars query results to ClusterEntities."""
+    data = pl.DataFrame(
+        {
+            "id": [1, 1, 2, 2],
+            "left_key": ["a1", None, "a2", "a3"],
+            "right_key": [None, "b1", None, "b2"],
+        }
+    )
+
+    got = query_to_cluster_entities(
+        data,
+        keys={"left": "left_key", "right": "right_key"},
+    )
+
+    assert got == {
+        ClusterEntity(
+            id=1,
+            keys=EntityReference(
+                {"left": frozenset({"a1"}), "right": frozenset({"b1"})}
+            ),
+        ),
+        ClusterEntity(
+            id=2,
+            keys=EntityReference(
+                {"left": frozenset({"a2", "a3"}), "right": frozenset({"b2"})}
+            ),
+        ),
+    }
+
+
+def test_query_to_cluster_entities_requires_key_fields() -> None:
+    """Test query result validation."""
+    data = pl.DataFrame({"id": [1], "left_key": ["a1"]})
+
+    with pytest.raises(ValueError, match="missing"):
+        query_to_cluster_entities(
+            data,
+            keys={"left": "left_key", "right": "right_key"},
+        )
 
 
 @pytest.mark.parametrize(
