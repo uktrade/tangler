@@ -5,17 +5,15 @@ import polars as pl
 import pytest
 from faker import Faker
 
-from tangler import (
-    ClusterEntity,
-    EntityReference,
-    FeatureConfig,
-    SourceEntity,
-    SourceStepName,
+from tangler.correctness import (
     diff_entities,
-    generate_entities,
     query_to_cluster_entities,
     scores_to_results_entities,
 )
+from tangler.entities import ClusterEntity, EntityReference, SourceEntity
+from tangler.features import FeatureConfig
+from tangler.generation import generate_entities
+from tangler.types import SourceName
 
 
 def make_cluster_entity(id: int, *args: Any) -> ClusterEntity:
@@ -46,7 +44,7 @@ def make_cluster_entity(id: int, *args: Any) -> ClusterEntity:
 
 
 def make_source_entity(
-    source: SourceStepName, keys: list[str], base_val: str
+    source: SourceName, keys: list[str], base_val: str
 ) -> SourceEntity:
     """Helper to create a SourceEntity."""
     entity = SourceEntity(base_values={"name": base_val})
@@ -61,7 +59,7 @@ def make_source_entity(
         ("source2", frozenset({"A", "B"})),
     ),
 )
-def test_entity_reference_creation(name: SourceStepName, keys: frozenset[str]) -> None:
+def test_entity_reference_creation(name: SourceName, keys: frozenset[str]) -> None:
     """Test basic EntityReference creation and access."""
     ref = EntityReference({name: keys})
     assert ref[name] == keys
@@ -507,6 +505,6 @@ def test_query_to_cluster_entities_requires_key_fields() -> None:
 def test_feature_config_datatype_inference(
     base_generator: str, expected_type: pl.DataType
 ) -> None:
-    """Test that SQL types are correctly inferred from feature configurations."""
+    """Test that Polars types are inferred from feature configurations."""
     feature_config = FeatureConfig(name=base_generator, base_generator=base_generator)
     assert feature_config.datatype == expected_type

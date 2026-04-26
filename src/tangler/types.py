@@ -1,6 +1,6 @@
-"""Common type aliases."""
+"""Common Tangler type aliases."""
 
 from typing import TypeAlias
 
-SourceStepName: TypeAlias = str
-"""Type alias for source step names."""
+SourceName: TypeAlias = str
+"""Type alias for source names."""

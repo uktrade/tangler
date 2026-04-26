@@ -1,4 +1,4 @@
-"""Functions to transform data between tabular and graph structures."""
+"""Internal graph utilities."""
 
 from collections import defaultdict
 from collections.abc import Hashable
@@ -8,11 +8,7 @@ T = TypeVar("T", bound=Hashable)
 
 
 class DisjointSet(Generic[T]):
-    """Disjoint set forest with "path compression" and "union by rank" heuristics.
-
-    This follows implementation from Cormen, Thomas H., et al. Introduction to
-    algorithms. MIT press, 2022
-    """
+    """Disjoint-set forest with path compression and union by rank."""
 
     def __init__(self) -> None:
         """Initialize the disjoint set."""
@@ -20,7 +16,7 @@ class DisjointSet(Generic[T]):
         self.rank: dict[T, int] = {}
 
     def _make_set(self, x: T) -> None:
-        """Create a new set with a single element x."""
+        """Create a new set with a single element."""
         self.parent[x] = x
         self.rank[x] = 0
 
@@ -30,11 +26,11 @@ class DisjointSet(Generic[T]):
             self._make_set(x)
 
     def union(self, x: T, y: T) -> None:
-        """Merge the sets containing elements x and y."""
+        """Merge the sets containing two elements."""
         self._link(self._find(x), self._find(y))
 
     def _link(self, x: T, y: T) -> None:
-        """Merge the sets containing elements x and y."""
+        """Merge two representative elements."""
         if self.rank[x] > self.rank[y]:
             self.parent[y] = x
         else:
@@ -43,7 +39,7 @@ class DisjointSet(Generic[T]):
                 self.rank[y] += 1
 
     def _find(self, x: T) -> T:
-        """Return the representative element of the set containing x."""
+        """Return the representative element of the set containing an element."""
         if x not in self.parent:
             self._make_set(x)
             return x
@@ -54,7 +50,7 @@ class DisjointSet(Generic[T]):
         return self.parent[x]
 
     def get_components(self) -> list[set[T]]:
-        """Return the connected components of the disjoint set."""
+        """Return connected components from the disjoint set."""
         components = defaultdict(set)
         for x in self.parent:
             root = self._find(x)

@@ -3,9 +3,19 @@ repos:
     hooks:
       # Run the ruff linter and formatter using just command
       - id: ruff
-        name: ruff
+        name: Link and format
         description: "Format Python code using ruff format via just command"
         entry: just format
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      # Run the ty type checker
+      - id: ty
+        name: Type check
+        description: "Type check Python code using ty check via just command"
+        entry: just check
         language: system
         types_or: [python, pyi]
         pass_filenames: false

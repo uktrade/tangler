@@ -1,173 +1,36 @@
-"""Classes and functions for generating and comparing entities.
+"""Ground-truth entity objects and source references."""
 
-These underpin the entity resolution process, which is the core of the
-source and model testkit factory system.
-"""
-
-from abc import ABC, abstractmethod
-from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping
-from functools import cache
+from collections.abc import Iterator, Mapping
 from random import getrandbits
 from types import NotImplementedType
-from typing import Any, Generic, Self, TypeVar
+from typing import Any
 
 import polars as pl
-from faker import Faker
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-from tangler.transform import DisjointSet
-from tangler.types import SourceStepName
+from tangler.types import SourceName
 
-SourceTestkit = Any
-
-T = TypeVar("T")
+SourceData = Any
 
 
-class VariationRule(BaseModel, Generic[T], ABC):
-    """Abstract base class for variation rules."""
-
-    model_config = ConfigDict(frozen=True)
-
-    @property
-    @abstractmethod
-    def type(self) -> type[T]:
-        """Python type this rule can be applied to."""
-        pass
-
-    @abstractmethod
-    def apply(self, value: T) -> T:
-        """Apply the variation to a value."""
-        pass
-
-
-class SuffixRule(VariationRule[str]):
-    """Add a suffix to a value."""
-
-    suffix: str
-
-    @property
-    def type(self) -> type[str]:  # noqa: D102
-        return str
-
-    def apply(self, value: str) -> str:  # noqa: D102
-        return f"{value}{self.suffix}"
-
-
-class PrefixRule(VariationRule[str]):
-    """Add a prefix to a value."""
-
-    prefix: str
-
-    @property
-    def type(self) -> type[str]:  # noqa: D102
-        return str
-
-    def apply(self, value: str) -> str:  # noqa: D102
-        return f"{self.prefix}{value}"
-
-
-class ReplaceRule(VariationRule[str]):
-    """Replace occurrences of a string with another."""
-
-    old: str
-    new: str
-
-    @property
-    def type(self) -> type[str]:  # noqa: D102
-        return str
-
-    def apply(self, value: str) -> str:  # noqa: D102
-        return value.replace(self.old, self.new)
-
-
-def infer_data_type(base: str, parameters: tuple | None) -> pl.DataType:
-    """Infer an appropriate Polars type from a Faker configuration.
-
-    Args:
-        base: Faker generator type
-        parameters: Parameters for the generator
-
-    Returns:
-        A Polars DataType
-    """
-    generator = Faker()
-    value_generator = getattr(generator, base)
-    generator_kwargs = {} if not parameters else dict(parameters)
-    examples = [value_generator(**generator_kwargs) for _ in range(5)]
-    series = pl.Series(examples)
-    return series.dtype
-
-
-class FeatureConfig(BaseModel):
-    """Configuration for generating a feature with variations."""
-
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    name: str
-    base_generator: str
-    parameters: tuple | None = Field(
-        default=None,
-        description=(
-            "Parameters for the generator. A tuple of tuples passed to the generator."
-        ),
-    )
-    unique: bool = Field(
-        default=True,
-        description=(
-            "Whether the generator enforces uniqueness in the generated data. "
-            "For example, using unique=True with the 'boolean' generator will error "
-            "if more the two values are generated."
-        ),
-    )
-    drop_base: bool = Field(
-        default=False, description="Whether the base case is dropped."
-    )
-    variations: tuple[VariationRule, ...] = Field(default_factory=tuple)
-    datatype: pl.DataType = Field(
-        default_factory=lambda data: infer_data_type(
-            data["base_generator"], data["parameters"]
-        )
-    )
-
-    def add_variations(self, *rule: VariationRule) -> "FeatureConfig":
-        """Add a variation rule to the feature."""
-        return FeatureConfig(
-            name=self.name,
-            base_generator=self.base_generator,
-            parameters=self.parameters,
-            unique=self.unique,
-            drop_base=self.drop_base,
-            variations=self.variations + tuple(rule),
-        )
-
-    @field_validator("name", mode="after")
-    @classmethod
-    def protected_names(cls: type[Self], value: str) -> str:
-        """Ensure name is not a reserved keyword."""
-        if value in {"id", "key"}:
-            raise ValueError("Feature name cannot be 'id' or 'key'.")
-        return value
-
-
-class EntityReference(Mapping[SourceStepName, frozenset[str]]):
+class EntityReference(Mapping[SourceName, frozenset[str]]):
     """Reference to an entity's presence in specific sources.
 
-    Maps source step names to sets of primary keys.
+    Maps source names to sets of primary keys.
     """
 
     def __init__(
         self,
-        mapping: Mapping[SourceStepName, frozenset[str]] | None = None,
+        mapping: Mapping[SourceName, frozenset[str]] | None = None,
     ) -> None:
         """Initialise the EntityReference."""
         self._mapping = dict({} if mapping is None else mapping)
 
-    def __getitem__(self, key: SourceStepName) -> frozenset[str]:
+    def __getitem__(self, key: SourceName) -> frozenset[str]:
         """Return the key set for a source."""
         return self._mapping[key]
 
-    def __iter__(self) -> Iterator[SourceStepName]:
+    def __iter__(self) -> Iterator[SourceName]:
         """Iterate over source names."""
         return iter(self._mapping)
 
@@ -207,11 +70,7 @@ class EntityReference(Mapping[SourceStepName, frozenset[str]]):
 
 
 class EntityIDMixin:
-    """Mixin providing common ID-based functionality for entity classes.
-
-    Implements integer conversion and comparison operators for sorting
-    based on the entity's ID.
-    """
+    """Mixin providing integer ID comparisons for entity classes."""
 
     id: int
 
@@ -253,14 +112,11 @@ class EntityIDMixin:
 
 
 class SourceKeyMixin:
-    """Mixin providing common source key functionality for entity classes.
-
-    Implements methods for accessing and retrieving source keys.
-    """
+    """Mixin providing source key lookup helpers for entity classes."""
 
     keys: EntityReference
 
-    def get_keys(self, name: SourceStepName) -> set[str]:
+    def get_keys(self, name: SourceName) -> set[str]:
         """Get keys for a specific source.
 
         Args:
@@ -272,15 +128,15 @@ class SourceKeyMixin:
         return set(self.keys.get(name, frozenset()))
 
     def get_values(
-        self, sources: dict[SourceStepName, "SourceTestkit"]
-    ) -> dict[SourceStepName, dict[str, list[str]]]:
+        self, sources: dict[SourceName, SourceData]
+    ) -> dict[SourceName, dict[str, list[str]]]:
         """Get all unique values for this entity across sources.
 
         Each source may have its own variations/transformations of the base data,
         so we maintain separation between sources.
 
         Args:
-            sources: Dictionary of source step name to source data
+            sources: Dictionary of source name to source data.
 
         Returns:
             Dictionary mapping:
@@ -295,7 +151,7 @@ class SourceKeyMixin:
             source = sources.get(source_name)
 
             if source is None:
-                raise ValueError(f"SourceConfig not found: {source_name}")
+                raise ValueError(f"Source data not found: {source_name}")
 
             # Get rows for this entity in this source
             entity_rows = source.data.filter(pl.col("key").is_in(list(keys)))
@@ -312,7 +168,7 @@ class SourceKeyMixin:
 
 
 class ClusterEntity(BaseModel, EntityIDMixin, SourceKeyMixin):
-    """Represents a merged entity mid-pipeline."""
+    """Represents one resolved cluster across one or more sources."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -392,7 +248,7 @@ class ClusterEntity(BaseModel, EntityIDMixin, SourceKeyMixin):
 
 
 class SourceEntity(BaseModel, EntityIDMixin, SourceKeyMixin):
-    """Represents a single entity across all sources."""
+    """Represents one ground-truth entity across sources."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -416,7 +272,7 @@ class SourceEntity(BaseModel, EntityIDMixin, SourceKeyMixin):
         """Hash based on sorted base values."""
         return hash(tuple(sorted(self.base_values.items())))
 
-    def add_source_reference(self, name: SourceStepName, keys: list[str]) -> None:
+    def add_source_reference(self, name: SourceName, keys: list[str]) -> None:
         """Add or update a source reference.
 
         Args:
@@ -427,7 +283,7 @@ class SourceEntity(BaseModel, EntityIDMixin, SourceKeyMixin):
         mapping[name] = frozenset(keys)
         self.keys = EntityReference(mapping)
 
-    def to_cluster_entity(self, *names: SourceStepName) -> ClusterEntity | None:
+    def to_cluster_entity(self, *names: SourceName) -> ClusterEntity | None:
         """Convert this SourceEntity to a ClusterEntity with the specified sources.
 
         This method makes diffing really easy. Testing whether ClusterEntity objects
@@ -454,7 +310,7 @@ class SourceEntity(BaseModel, EntityIDMixin, SourceKeyMixin):
             ClusterEntity containing only the specified sources' keys, or None
             if none of the specified sources are present in this entity.
         """
-        filtered: dict[SourceStepName, frozenset[str]] = {}
+        filtered: dict[SourceName, frozenset[str]] = {}
         for name in names:
             keys = self.keys.get(name)
             if keys is not None:
@@ -464,179 +320,3 @@ class SourceEntity(BaseModel, EntityIDMixin, SourceKeyMixin):
             return None
 
         return ClusterEntity(keys=EntityReference(filtered))
-
-
-def query_to_cluster_entities(
-    data: pl.DataFrame,
-    keys: dict[SourceStepName, str],
-) -> set[ClusterEntity]:
-    """Convert a query result to a set of ClusterEntities.
-
-    Useful for turning query results into a set of ClusterEntities that can be used
-    in `diff_entities()`.
-
-    Args:
-        data: A Polars DataFrame representing a query result
-        keys: Mapping of source step names to key field names
-
-    Returns:
-        A set of ClusterEntity objects
-    """
-    must_have_fields = set(["id"] + list(keys.values()))
-    if not must_have_fields.issubset(data.columns):
-        raise ValueError(
-            f"Fields {must_have_fields.difference(data.columns)} must be included "
-            "in the data and are missing."
-        )
-
-    grouped = data.group_by("id").agg(
-        pl.col(key_field).drop_nulls().unique().alias(source)
-        for source, key_field in keys.items()
-    )
-
-    entities: set[ClusterEntity] = set()
-    for row in grouped.iter_rows(named=True):
-        entity_refs: dict[SourceStepName, frozenset[str]] = {}
-        for source in keys:
-            source_keys = row[source]
-            if source_keys:
-                entity_refs[source] = frozenset(source_keys)
-
-        entities.add(
-            ClusterEntity(
-                id=row["id"],
-                keys=EntityReference(entity_refs),
-            )
-        )
-
-    return entities
-
-
-def _merge_cluster_entities(
-    entities: Iterable[ClusterEntity],
-) -> ClusterEntity | None:
-    """Merge cluster entities without relying on sum's integer start value."""
-    iterator = iter(entities)
-    merged = next(iterator, None)
-    if merged is None:
-        return None
-    for entity in iterator:
-        merged += entity
-    return merged
-
-
-@cache
-def generate_entities(
-    generator: Faker,
-    features: tuple[FeatureConfig, ...],
-    n: int,
-) -> tuple[SourceEntity]:
-    """Generate base entities with their ground truth values from generator."""
-    entities = []
-    for _ in range(n):
-        base_values = {}
-        for feature in features:
-            generator_func = generator.unique if feature.unique else generator
-            value_generator = getattr(generator_func, feature.base_generator)
-            parameters = {} if not feature.parameters else dict(feature.parameters)
-
-            value = value_generator(**parameters)
-            # Explicitly cast lists to tuples to ensure they are hashable
-            if isinstance(value, list):
-                value = tuple(value)
-            base_values[feature.name] = value
-
-        entities.append(SourceEntity(base_values=base_values, keys=EntityReference()))
-    return tuple(entities)
-
-
-def scores_to_results_entities(
-    scores: pl.DataFrame,
-    left_clusters: tuple[ClusterEntity, ...],
-    right_clusters: tuple[ClusterEntity, ...] | None = None,
-    threshold: float = 0.0,
-) -> tuple[ClusterEntity, ...]:
-    """Convert scores to ClusterEntity objects based on a threshold."""
-    left_lookup = {entity.id: entity for entity in left_clusters}
-    if right_clusters is not None:
-        right_lookup = {entity.id: entity for entity in right_clusters}
-    else:
-        right_lookup = left_lookup
-
-    djs = DisjointSet[ClusterEntity]()
-
-    # Add ALL entities to the disjoint set
-    for entity in left_clusters:
-        djs.add(entity)
-    if right_clusters is not None:
-        for entity in right_clusters:
-            djs.add(entity)
-
-    # Add edges to the disjoint set
-    for record in scores.to_dicts():
-        if record["score"] >= threshold:
-            djs.union(
-                left_lookup[record["left_id"]],
-                right_lookup[record["right_id"]],
-            )
-
-    components = djs.get_components()
-
-    entities: list[ClusterEntity] = []
-    for component in components:
-        merged = _merge_cluster_entities(component)
-        if merged is not None:
-            entities.append(merged)
-
-    return tuple(entities)
-
-
-def diff_entities(
-    expected: list[ClusterEntity], actual: list[ClusterEntity]
-) -> tuple[bool, dict]:
-    """Compare two lists of ClusterEntity with detailed diff information.
-
-    Args:
-        expected: Expected ClusterEntity list
-        actual: Actual ClusterEntity list
-
-    Returns:
-        A tuple containing:
-        - Boolean: True if lists are identical, False otherwise
-        - Dictionary that counts the number of actual entities that fall into the
-            following criteria:
-            - 'perfect': Match an expected entity exactly
-            - 'subset': Are a subset of an expected entity
-            - 'superset': Are a superset of an expected entity
-            - 'wrong': Don't match any expected entity
-            - 'invalid': Contain keys not present in any expected entity
-    """
-    expected_set, actual_set = set(expected), set(actual)
-    if expected_set == actual_set:
-        return True, {}
-
-    all_expected = _merge_cluster_entities(expected_set)
-    perfect_matches = expected_set & actual_set
-    remaining_actual = actual_set - perfect_matches
-
-    counter = Counter(
-        {
-            "perfect": len(perfect_matches),
-            "subset": 0,
-            "superset": 0,
-            "wrong": 0,
-            "invalid": 0,
-        }
-    )
-
-    for a in remaining_actual:
-        if any(a in e for e in expected_set):
-            counter["subset"] += 1
-        elif all_expected is None or a not in all_expected:
-            counter["invalid"] += 1
-        elif any(e in a for e in expected_set):
-            counter["superset"] += 1
-        else:
-            counter["wrong"] += 1
-
-    return False, dict(counter)
