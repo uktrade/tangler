@@ -1,6 +1,5 @@
 """Generate testable dirty data for entity resolution."""
 
-from tangler.datatypes import DataTypes
 from tangler.entities import (
     ClusterEntity,
     EntityReference,
@@ -19,7 +18,6 @@ from tangler.types import SourceStepName
 
 __all__ = [
     "ClusterEntity",
-    "DataTypes",
     "EntityReference",
     "FeatureConfig",
     "PrefixRule",

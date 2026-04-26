@@ -6,18 +6,18 @@ source and model testkit factory system.
 
 from abc import ABC, abstractmethod
 from collections import Counter
+from collections.abc import Iterable, Iterator, Mapping
 from functools import cache
 from random import getrandbits
+from types import NotImplementedType
 from typing import Any, Generic, Self, TypeVar
 
 import pandas as pd
 import polars as pl
 import pyarrow as pa
 from faker import Faker
-from frozendict import frozendict
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from tangler.datatypes import DataTypes
 from tangler.transform import DisjointSet
 from tangler.types import SourceStepName
 
@@ -83,28 +83,28 @@ class ReplaceRule(VariationRule[str]):
         return value.replace(self.old, self.new)
 
 
-def infer_data_type(base: str, parameters: tuple | None) -> DataTypes:
-    """Infer an appropriate Matchbox type from a Faker configuration.
+def infer_data_type(base: str, parameters: tuple | None) -> pl.DataType:
+    """Infer an appropriate Polars type from a Faker configuration.
 
     Args:
         base: Faker generator type
         parameters: Parameters for the generator
 
     Returns:
-        A Matchbox DataType
+        A Polars DataType
     """
     generator = Faker()
     value_generator = getattr(generator, base)
     generator_kwargs = {} if not parameters else dict(parameters)
     examples = [value_generator(**generator_kwargs) for _ in range(5)]
     series = pl.Series(examples)
-    return DataTypes.from_dtype(series.dtype)
+    return series.dtype
 
 
 class FeatureConfig(BaseModel):
     """Configuration for generating a feature with variations."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     name: str
     base_generator: str
@@ -126,7 +126,7 @@ class FeatureConfig(BaseModel):
         default=False, description="Whether the base case is dropped."
     )
     variations: tuple[VariationRule, ...] = Field(default_factory=tuple)
-    datatype: DataTypes = Field(
+    datatype: pl.DataType = Field(
         default_factory=lambda data: infer_data_type(
             data["base_generator"], data["parameters"]
         )
@@ -151,16 +151,8 @@ class FeatureConfig(BaseModel):
             raise ValueError("Feature name cannot be 'id' or 'key'.")
         return value
 
-    @field_validator("datatype", mode="before")
-    @classmethod
-    def string_to_strenum(cls: type[Self], value: str) -> DataTypes:
-        """Convert string to DataTypes enum."""
-        if isinstance(value, str):
-            return DataTypes(value)
-        return value
 
-
-class EntityReference(frozendict):
+class EntityReference(Mapping[SourceStepName, frozenset[str]]):
     """Reference to an entity's presence in specific sources.
 
     Maps source step names to sets of primary keys.
@@ -168,15 +160,38 @@ class EntityReference(frozendict):
 
     def __init__(
         self,
-        mapping: dict[SourceStepName, frozenset[str]] | None = None,
+        mapping: Mapping[SourceStepName, frozenset[str]] | None = None,
     ) -> None:
         """Initialise the EntityReference."""
-        super().__init__({} if mapping is None else mapping)
+        self._mapping = dict({} if mapping is None else mapping)
+
+    def __getitem__(self, key: SourceStepName) -> frozenset[str]:
+        """Return the key set for a source."""
+        return self._mapping[key]
+
+    def __iter__(self) -> Iterator[SourceStepName]:
+        """Iterate over source names."""
+        return iter(self._mapping)
+
+    def __len__(self) -> int:
+        """Return the number of source references."""
+        return len(self._mapping)
+
+    def __hash__(self) -> int:
+        """Hash based on source names and their key sets."""
+        return hash(
+            tuple(
+                (source, tuple(sorted(keys)))
+                for source, keys in sorted(self._mapping.items())
+            )
+        )
 
     def __add__(self, other: "EntityReference") -> "EntityReference":
         """Merge two EntityReferences by unioning keys for each source."""
         if not isinstance(other, EntityReference):
-            return NotImplemented
+            raise TypeError(
+                "EntityReference can only be added to another EntityReference."
+            )
 
         return EntityReference(
             {
@@ -185,10 +200,10 @@ class EntityReference(frozendict):
             }
         )
 
-    def __le__(self, other: Self) -> bool:
+    def __le__(self, other: object) -> bool:
         """Test if self is a subset of other."""
         if not isinstance(other, EntityReference):
-            return NotImplemented
+            return False
 
         return all(name in other and self[name] <= other[name] for name in self)
 
@@ -206,33 +221,33 @@ class EntityIDMixin:
         """Allow converting an entity to an integer by returning its ID."""
         return self.id
 
-    def __lt__(self, other: Self | int) -> bool:
+    def __lt__(self, other: object) -> bool | NotImplementedType:
         """Compare based on ID for sorting operations."""
-        if hasattr(other, "id"):
+        if isinstance(other, EntityIDMixin):
             return self.id < other.id
         if isinstance(other, int):
             return self.id < other
         return NotImplemented
 
-    def __gt__(self, other: Self | int) -> bool:
+    def __gt__(self, other: object) -> bool | NotImplementedType:
         """Compare based on ID for sorting operations."""
-        if hasattr(other, "id"):
+        if isinstance(other, EntityIDMixin):
             return self.id > other.id
         if isinstance(other, int):
             return self.id > other
         return NotImplemented
 
-    def __le__(self, other: Self | int) -> bool:
+    def __le__(self, other: object) -> bool | NotImplementedType:
         """Compare based on ID for sorting operations."""
-        if hasattr(other, "id"):
+        if isinstance(other, EntityIDMixin):
             return self.id <= other.id
         if isinstance(other, int):
             return self.id <= other
         return NotImplemented
 
-    def __ge__(self, other: Self | int) -> bool:
+    def __ge__(self, other: object) -> bool | NotImplementedType:
         """Compare based on ID for sorting operations."""
-        if hasattr(other, "id"):
+        if isinstance(other, EntityIDMixin):
             return self.id >= other.id
         if isinstance(other, int):
             return self.id >= other
@@ -386,7 +401,7 @@ class SourceEntity(BaseModel, EntityIDMixin, SourceKeyMixin):
     base_values: dict[str, Any] = Field(description="Feature name -> base value")
     keys: EntityReference = Field(
         description="Source to keys mapping",
-        default=EntityReference(mapping=frozenset()),
+        default_factory=EntityReference,
     )
     total_unique_variations: int = Field(default=0)
 
@@ -440,11 +455,11 @@ class SourceEntity(BaseModel, EntityIDMixin, SourceKeyMixin):
             ClusterEntity containing only the specified sources' keys, or None
             if none of the specified sources are present in this entity.
         """
-        filtered = {
-            name: self.keys.get(name)
-            for name in names
-            if self.keys.get(name) is not None
-        }
+        filtered: dict[SourceStepName, frozenset[str]] = {}
+        for name in names:
+            keys = self.keys.get(name)
+            if keys is not None:
+                filtered[name] = keys
 
         if len(filtered) == 0:
             return None
@@ -493,6 +508,19 @@ def query_to_cluster_entities(
 
     result = data.groupby("id").apply(_create_cluster_entity, include_groups=False)
     return set(result.tolist())
+
+
+def _merge_cluster_entities(
+    entities: Iterable[ClusterEntity],
+) -> ClusterEntity | None:
+    """Merge cluster entities without relying on sum's integer start value."""
+    iterator = iter(entities)
+    merged = next(iterator, None)
+    if merged is None:
+        return None
+    for entity in iterator:
+        merged += entity
+    return merged
 
 
 @cache
@@ -550,12 +578,13 @@ def scores_to_results_entities(
                 right_lookup[record["right_id"]],
             )
 
-    components: set[set[ClusterEntity]] = djs.get_components()
+    components = djs.get_components()
 
     entities: list[ClusterEntity] = []
     for component in components:
-        merged: ClusterEntity = sum(component)
-        entities.append(merged)
+        merged = _merge_cluster_entities(component)
+        if merged is not None:
+            entities.append(merged)
 
     return tuple(entities)
 
@@ -584,7 +613,7 @@ def diff_entities(
     if expected_set == actual_set:
         return True, {}
 
-    all_expected = sum(expected_set)
+    all_expected = _merge_cluster_entities(expected_set)
     perfect_matches = expected_set & actual_set
     remaining_actual = actual_set - perfect_matches
 
@@ -601,7 +630,7 @@ def diff_entities(
     for a in remaining_actual:
         if any(a in e for e in expected_set):
             counter["subset"] += 1
-        elif a not in all_expected:
+        elif all_expected is None or a not in all_expected:
             counter["invalid"] += 1
         elif any(e in a for e in expected_set):
             counter["superset"] += 1
