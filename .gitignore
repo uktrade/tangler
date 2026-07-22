@@ -22,8 +22,9 @@ site/
 /GEMINI.md
 /AGENTS.md
 
-# .agents dir
+# AI files
 .agents
+.codex
 
 # Logs
 *.log

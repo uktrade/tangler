@@ -6,7 +6,11 @@ readme = "README.md"
 authors = [{ name="Department for Business and Trade" }]
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "faker>=36.1.1",
+    "polars>=1.32.3",
+    "pydantic>=2.9.2",
+]
 
 [project.urls]
 "Documentation" = "https://github.com/uktrade/tangler"
@@ -25,7 +29,7 @@ dev = [
 ]
 
 [tool.uv]
-default-groups = ["dev", "typing"]
+default-groups = ["dev"]
 package = true
 upgrade-package = ["ruff"]
 

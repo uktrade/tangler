@@ -3,7 +3,6 @@
 Generate testable dirty data for entity resolution.
 """
 
+from importlib.metadata import version
 
-def main() -> None:
-    """Entry."""
-    print("Hello from tangler!")
+__version__ = version("tangler")
